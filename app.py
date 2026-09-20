@@ -14,75 +14,81 @@ else:
 
 st.title("⚡ Paper Trading Terminal")
 
-tab_scan, tab_positions, tab_history = st.tabs(["🔍 Opportunities & Scan", "📊 Active Positions", "📈 Performance Ledger"])
+tab_scan, tab_positions, tab_history = st.tabs(["🔍 Opportunities", "📊 Active Positions", "📈 Performance Ledger"])
 
-# ==================== TAB 1: OPPORTUNITIES & SCAN ====================
+# ==================== TAB 1: OPPORTUNITIES (MATCHING SCREENSHOT) ====================
 with tab_scan:
-    st.subheader("Market Scanner & Discovery Engine")
+    col_hdr, col_btn = st.columns([3, 1])
+    col_hdr.subheader("Discovery Scanner")
     
-    if st.button("🚀 Run Finder & Analysis", use_container_width=True):
-        with st.spinner("Scanning universe across Stocks & ETFs..."):
+    if col_btn.button("🚀 Run Scan", use_container_width=True):
+        with st.spinner("Scanning 57 NSE Heavyweights & ETFs..."):
             st.session_state["candidates"] = run_scanner_and_analysis()
 
     candidates = st.session_state.get("candidates", [])
 
     if not candidates:
-        st.info("Tap 'Run Finder & Analysis' to scan the market for momentum opportunities.")
+        st.info("Tap 'Run Scan' to scan the market across all 57 stocks and ETFs.")
     else:
-        st.caption(f"Found **{len(candidates)} qualified instruments**. Tap any stock or ETF below to configure and place your order:")
+        st.markdown(f"### 📋 QUALIFIED ASSETS ({len(candidates)})")
+        st.caption("Tap on any asset card below to configure quantity, view capital math, and punch an order:")
 
         for item in candidates:
             sym = item["symbol"]
             cmp = item["cmp"]
             asset_type = item["type"]
-            badge = "🪙 ETF" if asset_type == "ETF" else "🏢 STOCK"
+            badge = "🪙 ETF" if asset_type == "ETF" else "🏢 Stock"
             flow = item["flow_status"]
             change = item["pct_change"]
-            change_str = f"+{change:.2f}%" if change >= 0 else f"{change:.2f}%"
+            change_color = "green" if change >= 0 else "red"
+            change_sign = "+" if change >= 0 else ""
 
-            # Accordion card: Header shows overview; inputs are hidden until tapped
-            header_title = f"{badge} | **{sym}** — ₹{cmp:,.2f} ({change_str}) | RVol: {item['rvol']}x | {flow}"
-            
-            with st.expander(header_title):
+            # Card Header matching screenshot layout
+            card_title = f"{sym}  |  {badge}  |  ₹{cmp:,.2f}  ({change_sign}{change:.2f}%)  |  RVol: {item['rvol']}x  |  {flow}"
+
+            with st.expander(card_title):
+                # 4-Metric Grid matching screenshot data
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("CMP", f"₹{cmp:,.2f}")
-                m2.metric("RSI (14)", f"{item['rsi']}")
-                m3.metric("Trend Floor", f"₹{item['sma_trend']:,.2f}")
-                m4.metric("Flow Status", item['flow_status'])
+                m1.metric("LTP (CMP)", f"₹{cmp:,.2f}", f"{change_sign}{change:.2f}%")
+                m2.metric("Relative Vol (RVol)", f"{item['rvol']}x")
+                m3.metric("RSI (14)", f"{item['rsi']}")
+                m4.metric("200/50 SMA Trend", f"₹{item['sma_200']:,.2f}")
 
+                st.markdown(f"**Institutional Footprint:** `{flow}`  |  **Asset Class:** `{asset_type}`")
                 st.divider()
-                st.caption(f"💡 System Recommended Capital: **₹{item['rec_allocation']:,}**")
 
-                # Investment input
+                # Order Configuration (Revealed only upon clicking card)
+                st.markdown("#### 💼 Order Execution & Capital Sizing")
+                st.caption(f"💡 Recommended Allocation: **₹{item['rec_allocation']:,}**")
+
                 target_alloc = st.number_input(
-                    "Amount you want to invest (₹)",
+                    "Capital to allocate (₹)",
                     min_value=500,
                     value=int(item["rec_allocation"]),
                     step=1000,
                     key=f"alloc_{sym}"
                 )
 
-                # Real-time share count and cash calculation
+                # Real-Time Investment Breakdown
                 calc_qty = int(target_alloc // cmp) if cmp > 0 else 0
                 actual_invested = round(calc_qty * cmp, 2)
                 balance_left = round(target_alloc - actual_invested, 2)
 
                 st.markdown(
-                    f"**Investment Breakdown:**\n"
-                    f"* Calculated Quantity: **{calc_qty} units**\n"
-                    f"* Actual Amount to be Invested: **₹{actual_invested:,.2f}**\n"
-                    f"* Unused Balance: **₹{balance_left:,.2f}**"
+                    f"* **Calculated Shares/Units:** `{calc_qty} units`\n"
+                    f"* **Actual Amount Invested:** `₹{actual_invested:,.2f}`\n"
+                    f"* **Unallocated Cash Left:** `₹{balance_left:,.2f}`"
                 )
 
                 col_sl, col_tgt = st.columns(2)
                 custom_sl = col_sl.number_input("Stop Loss (₹)", value=float(item["sl"]), key=f"sl_{sym}")
                 custom_tgt = col_tgt.number_input("Target (₹)", value=float(item["target"]), key=f"tgt_{sym}")
 
-                btn_label = f"Queue AMO Buy: {sym}" if not is_market_open else f"Punch Buy Order: {sym}"
+                btn_label = f"Queue AMO Buy Order: {sym}" if not is_market_open else f"Punch Buy Order: {sym}"
                 
                 if st.button(btn_label, key=f"btn_{sym}", use_container_width=True):
                     if calc_qty < 1:
-                        st.error(f"Allocation ₹{target_alloc} is too low to buy 1 unit at ₹{cmp:,.2f}.")
+                        st.error(f"Allocation ₹{target_alloc} is too low to purchase 1 share at ₹{cmp:,.2f}.")
                     else:
                         success, msg = PaperBrokerAdapter.buy(
                             symbol=sym,
@@ -110,7 +116,7 @@ with tab_positions:
     positions_df = PaperBrokerAdapter.get_open_positions()
 
     if positions_df.empty:
-        st.info("No active positions. Expand any stock in 'Opportunities & Scan' to place a paper trade.")
+        st.info("No active positions. Expand any stock in 'Opportunities' to place a paper order.")
     else:
         total_unrealized_pnl = 0.0
         total_capital = 0.0
@@ -126,7 +132,6 @@ with tab_positions:
             entry_time = row['entry_time']
             order_mode = row.get('order_mode', 'REGULAR')
 
-            # Live price check
             cmp = get_live_price(sym) or buy_price
             pnl = round((cmp - buy_price) * qty, 2)
             pnl_pct = round(((cmp - buy_price) / buy_price) * 100, 2)
@@ -134,7 +139,7 @@ with tab_positions:
             total_capital += (buy_price * qty)
             total_unrealized_pnl += pnl
 
-            # AUTO SL / TARGET MONITOR (Triggers during open market sessions)
+            # AUTO SL / TARGET MONITOR
             if is_market_open:
                 if cmp <= sl:
                     PaperBrokerAdapter.sell(pos_id, sym, asset_type, qty, buy_price, cmp, "Stop-Loss Hit 🔴", entry_time)
@@ -145,7 +150,6 @@ with tab_positions:
                     st.success(f"Auto-Trigger: Target Hit for {sym} at ₹{cmp:,.2f}")
                     st.rerun()
 
-            # Mobile Position Card
             with st.container(border=True):
                 h1, h2 = st.columns(2)
                 mode_tag = " [AMO]" if order_mode == "AMO" else ""
@@ -164,7 +168,7 @@ with tab_positions:
 
         st.divider()
         c_tot_cap, c_tot_pnl = st.columns(2)
-        c_tot_cap.metric("Total Invested Capital", f"₹{total_capital:,.2f}")
+        c_tot_cap.metric("Total Capital Invested", f"₹{total_capital:,.2f}")
         c_tot_pnl.metric("Total Unrealized P&L", f"₹{total_unrealized_pnl:+,.2f}")
 
 # ==================== TAB 3: PERFORMANCE LEDGER ====================
@@ -173,7 +177,7 @@ with tab_history:
     history_df = PaperBrokerAdapter.get_history()
 
     if history_df.empty:
-        st.info("No completed trades yet. Once positions are closed manually or via SL/Target hits, your metrics, profit/loss ratio, and historical ledger will display here.")
+        st.info("No completed trades yet. Once positions are closed (manually or via SL/Target hits), your win-rate, profit/loss ratio, and full ledger will display here.")
     else:
         total_trades = len(history_df)
         wins = history_df[history_df['pnl'] > 0]
