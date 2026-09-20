@@ -8,20 +8,14 @@ DB_FILE = "trades.db"
 IST = pytz.timezone("Asia/Kolkata")
 
 def check_market_status():
-    """
-    Verifies if Indian equity markets (NSE/BSE) are open.
-    Trading hours: Mon-Fri, 9:15 AM - 3:30 PM IST.
-    """
     now_ist = datetime.now(IST)
-    weekday = now_ist.weekday()  # Monday = 0, Sunday = 6
+    weekday = now_ist.weekday()
 
-    # 1. Weekend Check
     if weekday == 5:
-        return False, "Market is closed today (Saturday). Orders will be placed as AMO (After Market Orders)."
+        return False, "Market is closed today (Saturday). Orders placed will be queued as AMO."
     if weekday == 6:
-        return False, "Market is closed today (Sunday). Orders will be placed as AMO (After Market Orders)."
+        return False, "Market is closed today (Sunday). Orders placed will be queued as AMO."
 
-    # 2. Weekday Trading Hours Check
     market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
     market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
 
@@ -71,14 +65,12 @@ def init_db():
 init_db()
 
 def get_live_price(symbol):
-    """Fetches exact CMP or latest trading session closing price."""
     formatted_symbol = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
     try:
         t = yf.Ticker(formatted_symbol)
         price = t.fast_info.get("last_price") or t.fast_info.get("regularMarketPrice")
         if price and price > 0:
             return round(float(price), 2)
-        
         hist = t.history(period="5d", interval="1d")
         if not hist.empty:
             return round(float(hist["Close"].iloc[-1]), 2)
@@ -90,7 +82,7 @@ class PaperBrokerAdapter:
     @staticmethod
     def buy(symbol, asset_type, qty, actual_invested, cmp, sl, target, is_amo=False):
         if qty < 1:
-            return False, "Allocation amount is too low to buy 1 unit."
+            return False, "Quantity must be at least 1 unit."
 
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
