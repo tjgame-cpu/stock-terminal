@@ -1,15 +1,13 @@
 """
-DISCOVERY & ANALYSIS ENGINE
-Exact 1:1 match with your standalone discovery script.
+DISCOVERY & MOMENTUM ENGINE
+Downloads the universe in a single batch query to prevent cloud IP rate limits.
 """
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-import numpy as np
 import pandas as pd
 import yfinance as yf
+import streamlit as st
 
 # ==============================================================================
-# 1. UNIVERSE DEFINITIONS (Exact 57 Instruments)
+# 1. UNIVERSE DEFINITIONS (57 Instruments)
 # ==============================================================================
 NSE_STOCKS_UNIVERSE = [
     # Nifty 50 Heavyweights
@@ -34,9 +32,6 @@ NSE_ETFS_UNIVERSE = [
 
 SCAN_POOL = list(dict.fromkeys(NSE_STOCKS_UNIVERSE + NSE_ETFS_UNIVERSE))
 
-# ==============================================================================
-# 2. TECHNICAL INDICATOR HELPERS
-# ==============================================================================
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0).rolling(window=period).mean()
@@ -44,17 +39,52 @@ def calculate_rsi(series, period=14):
     rs = gain / (loss + 1e-9)
     return 100 - (100 / (1 + rs))
 
-# ==============================================================================
-# 3. WORKER: PROCESS SINGLE TICKER
-# ==============================================================================
-def process_ticker(ticker):
-    clean_sym = ticker.replace(".NS", "")
+def extract_ticker_data(batch_df, ticker):
+    """Safely extracts clean OHLCV for a ticker regardless of pandas MultiIndex order."""
+    if not isinstance(batch_df.columns, pd.MultiIndex):
+        return batch_df.dropna()
+    
+    # Structure 1: Level 0 is Ticker (group_by='ticker')
+    if ticker in batch_df.columns.levels[0]:
+        return batch_df[ticker].dropna()
+    
+    # Structure 2: Level 1 is Ticker (Price Metric in Level 0)
+    if ticker in batch_df.columns.levels[1]:
+        return batch_df.xs(ticker, level=1, axis=1).dropna()
+        
+    return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_batch_data():
+    """Fetches all 57 tickers in ONE single network request to bypass cloud rate-limits."""
+    tickers_str = " ".join(SCAN_POOL)
     try:
-        t = yf.Ticker(ticker)
-        hist = t.history(period="1y")
+        data = yf.download(
+            tickers=tickers_str,
+            period="1y",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            progress=False,
+            threads=True
+        )
+        return data
+    except Exception:
+        return pd.DataFrame()
+
+def run_scanner_and_analysis():
+    batch_df = fetch_batch_data()
+    if batch_df.empty:
+        return []
+
+    qualified_candidates = []
+
+    for ticker in SCAN_POOL:
+        clean_sym = ticker.replace(".NS", "")
+        hist = extract_ticker_data(batch_df, ticker)
 
         if hist.empty or len(hist) < 50:
-            return None
+            continue
 
         close_series = hist["Close"]
         current_price = round(float(close_series.iloc[-1]), 2)
@@ -69,10 +99,11 @@ def process_ticker(ticker):
         )
         is_above_trend = current_price >= sma_200
 
-        # Relative Volume (RVol) Footprint
-        hist["Vol_SMA"] = hist["Volume"].rolling(window=20).mean()
-        last_vol = hist["Volume"].iloc[-1]
-        avg_vol = hist["Vol_SMA"].iloc[-1] if hist["Vol_SMA"].iloc[-1] > 0 else 1.0
+        # Relative Volume (RVol) - 20 SMA
+        vol_series = hist["Volume"]
+        vol_sma = vol_series.rolling(window=20).mean()
+        last_vol = vol_series.iloc[-1]
+        avg_vol = vol_sma.iloc[-1] if vol_sma.iloc[-1] > 0 else 1.0
         rvol = round(float(last_vol / avg_vol), 2)
 
         # RSI (14) Momentum
@@ -83,7 +114,7 @@ def process_ticker(ticker):
             else 50.0
         )
 
-        # EXACT DISCOVERY CRITERIA
+        # EXACT MOMENTUM CRITERIA
         if is_above_trend and rsi_val >= 48.0 and rvol >= 0.9:
             flow_tag = (
                 "Accumulation"
@@ -100,14 +131,13 @@ def process_ticker(ticker):
             )
             asset_type = "ETF" if is_etf else "Stock"
 
-            # Risk/Reward Setup
             sl_pct = 0.02 if is_etf else 0.035
             tgt_pct = 0.04 if is_etf else 0.07
             sl_price = round(current_price * (1 - sl_pct), 2)
             tgt_price = round(current_price * (1 + tgt_pct), 2)
             rec_alloc = 50000 if is_etf else 25000
 
-            return {
+            qualified_candidates.append({
                 "symbol": clean_sym,
                 "full_ticker": ticker,
                 "type": asset_type,
@@ -120,25 +150,10 @@ def process_ticker(ticker):
                 "sl": sl_price,
                 "target": tgt_price,
                 "rec_allocation": rec_alloc
-            }
-    except Exception:
-        return None
-    return None
-
-# ==============================================================================
-# 4. RUNNER (PARALLEL EXECUTION)
-# ==============================================================================
-def run_scanner_and_analysis():
-    qualified = []
-    # 8 workers process the full 57-symbol universe in ~4-6 seconds
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        results = executor.map(process_ticker, SCAN_POOL)
-        for res in results:
-            if res is not None:
-                qualified.append(res)
+            })
 
     # Sort descending by RVol and Day Change
-    if qualified:
-        qualified.sort(key=lambda x: (x["rvol"], x["pct_change"]), reverse=True)
+    if qualified_candidates:
+        qualified_candidates.sort(key=lambda x: (x["rvol"], x["pct_change"]), reverse=True)
 
-    return qualified
+    return qualified_candidates
