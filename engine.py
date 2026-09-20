@@ -8,27 +8,28 @@ DB_FILE = "trades.db"
 IST = pytz.timezone("Asia/Kolkata")
 
 def check_market_status():
+    """Checks if Indian equity/derivative markets are open (Mon-Fri, 9:15 AM - 3:30 PM IST)."""
     now_ist = datetime.now(IST)
     weekday = now_ist.weekday()
 
-    if weekday == 5:
-        return False, "Market is closed today (Saturday). Orders placed will be queued as AMO."
-    if weekday == 6:
-        return False, "Market is closed today (Sunday). Orders placed will be queued as AMO."
+    if weekday in [5, 6]:
+        day = "Saturday" if weekday == 5 else "Sunday"
+        return False, f"Market is closed today ({day}). Orders will queue as AMO."
 
     market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
     market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
 
     if now_ist < market_open:
-        return False, "Market has not opened yet (Opens at 9:15 AM IST). Orders will be queued as AMO."
+        return False, "Market opens at 9:15 AM IST. Orders will queue as AMO."
     elif now_ist > market_close:
-        return False, "Market is closed for the day (Closed at 3:30 PM IST). Orders will be queued as AMO."
+        return False, "Market closed for the day (3:30 PM IST). Orders will queue as AMO."
 
     return True, "Market is Open (Live Trading Active)"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # Active open positions
     c.execute('''
         CREATE TABLE IF NOT EXISTS positions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +45,7 @@ def init_db():
             order_mode TEXT
         )
     ''')
+    # Historical trade ledger
     c.execute('''
         CREATE TABLE IF NOT EXISTS trade_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,21 +61,53 @@ def init_db():
             exit_time TEXT
         )
     ''')
+    # Universal saved watchlist
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT UNIQUE,
+            asset_type TEXT,
+            added_time TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
 init_db()
 
-def get_live_price(symbol):
-    formatted_symbol = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
+def format_ticker_symbol(symbol):
+    """Formats ticker for yfinance query."""
+    sym = symbol.strip().upper()
+    # If already formatted with exchange or commodity notation
+    if sym.endswith(".NS") or sym.endswith(".BO") or "=" in sym:
+        return sym
+    return f"{sym}.NS"
+
+def get_live_quote(symbol):
+    """Fetches real-time market quote including price, previous close, and % change."""
+    formatted = format_ticker_symbol(symbol)
     try:
-        t = yf.Ticker(formatted_symbol)
+        t = yf.Ticker(formatted)
         price = t.fast_info.get("last_price") or t.fast_info.get("regularMarketPrice")
+        prev_close = t.fast_info.get("previous_close") or price
+
+        if not price:
+            hist = t.history(period="5d", interval="1d")
+            if not hist.empty:
+                price = float(hist["Close"].iloc[-1])
+                prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else price
+
         if price and price > 0:
-            return round(float(price), 2)
-        hist = t.history(period="5d", interval="1d")
-        if not hist.empty:
-            return round(float(hist["Close"].iloc[-1]), 2)
+            price = round(float(price), 2)
+            prev_close = round(float(prev_close), 2)
+            pct_change = round(((price - prev_close) / prev_close) * 100.0, 2) if prev_close else 0.0
+            return {
+                "symbol": symbol.strip().upper(),
+                "formatted": formatted,
+                "price": price,
+                "prev_close": prev_close,
+                "pct_change": pct_change
+            }
     except Exception:
         pass
     return None
@@ -127,5 +161,36 @@ class PaperBrokerAdapter:
     def get_history():
         conn = sqlite3.connect(DB_FILE)
         df = pd.read_sql_query("SELECT * FROM trade_history ORDER BY id DESC", conn)
+        conn.close()
+        return df
+
+    # --- WATCHLIST METHODS ---
+    @staticmethod
+    def add_to_watchlist(symbol, asset_type="Asset"):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            c.execute("INSERT INTO watchlist (symbol, asset_type, added_time) VALUES (?, ?, ?)",
+                      (symbol.upper(), asset_type, now))
+            conn.commit()
+            success = True
+        except sqlite3.IntegrityError:
+            success = False
+        conn.close()
+        return success
+
+    @staticmethod
+    def remove_from_watchlist(symbol):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
+        conn.commit()
+        conn.close()
+
+    @staticmethod
+    def get_watchlist():
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM watchlist ORDER BY id DESC", conn)
         conn.close()
         return df
